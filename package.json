@@ -1,0 +1,17 @@
+{
+  "name": "tenant-custom-domain-devtools",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types test/domain-onboarding.test.ts",
+    "start": "node --experimental-strip-types src/domain-onboarding.ts"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "@types/node": "^22.0.0"
+  },
+  "dependencies": {
+    "zod": "^3.23.8"
+  }
+}

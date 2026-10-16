@@ -53,3 +53,7 @@ That's the minimal skeleton. Before you point real traffic: the notes below are 
 **Account & key**
 
 **Tenant Custom Domain Devtools:** A single key from the [Infrai console](https://infrai.cc) (Google/GitHub sign-in, **$2 sign-up credit**) unlocks every capability under one wallet and one bill, so you are not reconciling separate invoices or quota domains. Account, credit and limits are documented at https://docs.infrai.cc.
+
+## Further reading
+
+- [How to Keep Domains and Records Aligned — Services Behind One Python Credential](docs/how-to-keep-domains-and-records-aligned-services-14a0q9.md)

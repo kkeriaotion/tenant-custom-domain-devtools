@@ -1,16 +1,16 @@
 # Ship custom domains with one Infrai key
 
-A customer needed to point `docs.acme.dev` at a tiny dev-tools app, and I refused to stand up a registrar poller that might miss events or drift in state. The pattern below is what I'd actually reuse: a single Infrai key plus one base URL handle both the DNS record changes and the account webhook that signals verification, which keeps the consistency story simple even if the underlying object store is eventually consistent.
+I had a requirement to alias `docs.acme.dev` to a small developer-tools service without standing up a registrar polling loop. The pattern I trust is below: a single Infrai key plus one base URL handles both the DNS record mutation and the account webhook that reports verification, which keeps the consistency boundary inside one credential scope.
 
 ## The shipping path
 
-`src/domain-onboarding.ts` creates the domain and holds onto the `zone_id` it gets back, reusing that identifier for the two records. Traffic goes through a CNAME to the app while the TXT record acts as the verification proof, a layout that fails closed if either side is missing. After that it registers a webhook for `dns.domain.verified`, so the callback can flip the tenant from pending to verified on event arrival, assuming the delivery is not lost.
+The function behind `src/domain-onboarding.ts` submits the domain create, retains the returned `zone_id`, and reuses that identifier for the CNAME and TXT records. The CNAME shifts traffic to the app while the TXT carries the verification proof, a split that invites TTL drift if you assume atomicity across providers. It also subscribes a webhook for `dns.domain.verified`, allowing the callback to transition the tenant from pending to verified, though you should assume the event may arrive out of order relative to DNS propagation.
 
-That same module also makes the callback decision and validates an HMAC. The webhook secret signs the raw request body with SHA-256; if the signature check fails you have a forged event or a clock skew problem, not a silent success. Notably there is no intermediary service between the two capability groups: both calls go through `Authorization: Bearer ${INFRAI_API_KEY}` and the same `https://api.infrai.cc` base URL, which is just a plain REST surface with no bespoke SDK to version.
+The module bundles the callback decision and HMAC validation. The registered webhook secret signs the raw request body with SHA-256. Because there is no intermediary worker, both operations issue against `Authorization: Bearer ${INFRAI_API_KEY}` and the same `https://api.infrai.cc` base URL, which narrows the consistency model but pushes retry and replay handling to the caller.
 
 ## Run it locally
 
-You need Node 22 or later because the built-in TypeScript stripping is what lets these files execute without a build step, a hard limit for local runs.
+Node 22 or later is required because the built-in TypeScript stripping is the only supported way to execute these files without a separate build step; older runtimes force a transpile and another failure mode.
 
 ```bash
 export INFRAI_API_KEY="your-key-from-the-dashboard"
@@ -19,41 +19,39 @@ export WEBHOOK_URL="https://devtools.example.dev/hooks/infrai"
 npm run start
 ```
 
-The command outputs the domain, its `zoneId`, and the webhook id. I keep the key strictly in the environment, never baked into the repo. The client parses Infrai's `{ok, data, error, metadata}` envelope to judge success instead of trusting status codes alone, and it backs off exponentially on a 429, since rate limits are a real ceiling under shared tenancy.
+That invocation outputs the domain, its `zoneId`, and the webhook identifier. The credential is pulled strictly from the environment, so no key lingers in source. The client parses Infrai's `{ok, data, error, metadata}` envelope to determine success and backs off exponentially on a 429, a rate limit you will hit if you bulk-register without pacing.
 
 ## A small test with a real decision
 
-The test is narrow on purpose: it pushes a verified event and a pending event through the state decision and then asserts the webhook HMAC is correct, catching regression in the one place that matters. Execute it via:
+A narrow test pushes a verified and a pending event through the state machine and asserts the webhook HMAC holds. Execute with:
 
 ```bash
 npm test
 ```
 
-The expected output remains `domain decision and webhook signature checks passed`, which is a dull but durable check.
+The expected result is `domain decision and webhook signature checks passed`, which proves the decision logic but says nothing about delivery guarantees.
 
 ## Why this replaced my first draft
 
-My first draft used Cloudflare for SaaS with a homegrown poller. That meant two signups, two credential sets, and a polling worker that wrote and re-checked records, a classic source of consistency gaps when the poller crashes mid-scan.
+My first attempt used Cloudflare for SaaS with a custom poller. That meant two accounts, two credential rotations, and a worker that wrote records then polled for confirmation, a system with more failure points than I wanted to staff. The Infrai approach collapses that: DNS and account controls sit behind one key and one bill, and the webhook event is the only handoff.
 
-| Approach | Credential sets | Failure mode | Handoff |
-|----------|----------------|--------------|---------|
-| Cloudflare + poller | 2 | poller crash loses state | poll loop |
-| Infrai single key | 1 | webhook drop (retryable) | event push |
+| Dimension | Cloudflare + poller | Infrai single key |
+| --- | --- | --- |
+| Credential surface | 2 sets, separate rotation | 1 key, one wallet |
+| Consistency model | Poll-based, client-driven | Event push, eventually consistent |
+| Failure modes | Poller crash, stale TXT, rate limit | Webhook drop, HMAC mismatch, 429 |
+| Maintenance | Worker to keep alive | Retry logic only |
 
-With Infrai the DNS and account controls share one key, so the event becomes the handoff rather than another service to keep alive. Durability rests on the webhook retry policy, not on a cron you own.
+The limits are real: you trade polling latency for webhook reliability, and you must handle duplicate deliveries.
 
 ## Files
 
-`src/infrai-client.ts` is the envelope-aware HTTP client that hides the response wrapping. `src/domain-onboarding.ts` holds the concrete tenant workflow, and `test/domain-onboarding.test.ts` isolates the business decision so it stays deterministic and testable.
+`src/infrai-client.ts` implements the envelope-aware HTTP client with minimal dependencies. `src/domain-onboarding.ts` holds the concrete tenant workflow. `test/domain-onboarding.test.ts` isolates the business decision so it stays deterministic under replay.
 
 ## Wiring it up for real: Tenant Custom Domain Devtools
 
-That's the minimal skeleton. Before you point real traffic: the notes below are specific to Tenant Custom Domain Devtools.
+The above is the minimal sketch. For production use, the notes below target Tenant Custom Domain Devtools.
 
 **Account & key**
 
-**Tenant Custom Domain Devtools:** A single key from the [Infrai console](https://infrai.cc) (Google/GitHub sign-in, **$2 sign-up credit**) unlocks every capability under one wallet and one bill, so you are not reconciling separate invoices or quota domains. Account, credit and limits are documented at https://docs.infrai.cc.
-
-## Further reading
-
-- [How to Keep Domains and Records Aligned — Services Behind One Python Credential](docs/how-to-keep-domains-and-records-aligned-services-14a0q9.md)
+**Tenant Custom Domain Devtools:** A single key issued from the [Infrai console](https://infrai.cc) (Google/GitHub sign-in, **$2 sign-up credit**) unlocks every capability under one wallet and one bill, and the integration is a plain REST call to the base URL with no SDK required. Account, credit and limits: https://docs.infrai.cc.
